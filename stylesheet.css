@@ -1,0 +1,11 @@
+.logo {
+    width: 170px;
+    height: 90px
+}
+.top-wrapper {
+    background-image: url("https://www.junglecity.com/wp-content/uploads/2019/06/kindergarten-1.jpg");
+    background-size: cover;
+    height: 250px;
+    margin: 0 auto;
+    width: 350px;
+}
