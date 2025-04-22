@@ -9,7 +9,9 @@ app = Flask(__name__)
 openai.api_key = os.getenv("OPENAI_API_KEY")
 LINE_TOKEN = os.getenv("LINE_TOKEN")
 
-# 言語を自動判定（ja / en / es）
+# 簡易履歴保存（ユーザー単位で持たせるなら辞書化が必要）
+chat_history = []
+
 def detect_language(text):
     try:
         lang = detect(text)
@@ -28,34 +30,45 @@ def webhook():
             msg = event["message"]["text"]
             lang = detect_language(msg)
 
-            prompts = []
-
+            # 翻訳の対象と言語設定
             if lang == "en":
-                prompts.append(("Spanish", f"Translate the following English sentence into Spanish:\n{msg}"))
+                system_prompt = "You are a professional translator. Translate from English to Spanish only. Do not explain."
             elif lang == "es":
-                prompts.append(("English", f"Translate the following Spanish sentence into English:\n{msg}"))
+                system_prompt = "You are a professional translator. Translate from Spanish to English only. Do not explain."
             elif lang == "ja":
-                prompts.append(("English", f"Translate the following Japanese sentence into English:\n{msg}"))
-                prompts.append(("Spanish", f"Translate the following Japanese sentence into Spanish:\n{msg}"))
+                system_prompt = "You are a professional translator. Translate from Japanese to English and Spanish only. Do not explain."
             else:
-                prompts.append(("Info", "Sorry, only English, Spanish, and Japanese are supported."))
+                reply = {"type": "text", "text": "Only Japanese, English, and Spanish are supported."}
+                reply_data = {
+                    "replyToken": event["replyToken"],
+                    "messages": [reply]
+                }
+                headers = {
+                    "Authorization": f"Bearer {LINE_TOKEN}",
+                    "Content-Type": "application/json"
+                }
+                requests.post("https://api.line.me/v2/bot/message/reply", headers=headers, json=reply_data)
+                continue
 
-            replies = []
-            for target, prompt in prompts:
-                try:
-                    res = openai.ChatCompletion.create(
-                        model="gpt-3.5-turbo",
-                        messages=[{"role": "user", "content": prompt}]
-                    )
-                    translated = res.choices[0].message["content"].strip()
-                except Exception as e:
-                    translated = f"[{target} translation error]\n{str(e)}"
+            # チャット履歴構築（翻訳コンテキスト保持）
+            chat_history.clear()
+            chat_history.append({"role": "system", "content": system_prompt})
+            chat_history.append({"role": "user", "content": msg})
 
-                replies.append({"type": "text", "text": translated})
+            try:
+                response = openai.ChatCompletion.create(
+                    model="gpt-3.5-turbo",
+                    messages=chat_history
+                )
+                translated = response.choices[0].message["content"].strip()
+            except Exception as e:
+                translated = f"[Translation error]\n{str(e)}"
+
+            reply = {"type": "text", "text": translated}
 
             reply_data = {
                 "replyToken": event["replyToken"],
-                "messages": replies
+                "messages": [reply]
             }
 
             headers = {
