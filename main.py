@@ -3,15 +3,13 @@ from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
-from openai import OpenAI
-from langdetect import detect
+import openai
 
 app = Flask(__name__)
 
-# 環境変数からLINEとOpenAIのキーを取得
 line_bot_api = LineBotApi(os.environ["LINE_CHANNEL_ACCESS_TOKEN"])
 handler = WebhookHandler(os.environ["LINE_CHANNEL_SECRET"])
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+openai.api_key = os.environ["OPENAI_API_KEY"]
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -29,33 +27,34 @@ def webhook():
 def handle_message(event):
     user_message = event.message.text
 
+    prompt = f"""
+You are a multilingual translator bot.
+Translate the following message based on its language:
+
+- If it's in Japanese, translate it to both English and Spanish.
+- If it's in English, translate it to Spanish.
+- If it's in Spanish, translate it to English.
+- If it's in another language, reply: "Only Japanese, English, and Spanish are supported."
+
+Return only the translations without extra explanation.
+
+Message: "{user_message}"
+"""
+
     try:
-        lang = detect(user_message)
-    except:
-        lang = "unknown"
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+        )
 
-    prompt = ""
-    if lang == "ja":
-        prompt = f"Translate the following Japanese text into both English and Spanish:\n\n{user_message}"
-    elif lang == "en":
-        prompt = f"Translate the following English text into Spanish:\n\n{user_message}"
-    elif lang == "es":
-        prompt = f"Translate the following Spanish text into English:\n\n{user_message}"
-    else:
-        return  # 未対応の言語は無視
+        reply_text = response.choices[0].message["content"].strip()
+    except Exception as e:
+        reply_text = f"[Translation error]\n{str(e)}"
 
-    # OpenAI APIで翻訳
-    response = client.chat.completions.create(
-        model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": prompt}],
-    )
-
-    translated_text = response.choices[0].message.content.strip()
-
-    # 翻訳を返信
     line_bot_api.reply_message(
         event.reply_token,
-        TextSendMessage(text=translated_text)
+        TextSendMessage(text=reply_text)
     )
 
 if __name__ == "__main__":
