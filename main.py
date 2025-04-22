@@ -1,37 +1,37 @@
 from flask import Flask, request
-import openai
 import os
 import requests
+import openai
 
 app = Flask(__name__)
-openai.api_key = os.getenv("OPENAI_API_KEY")
+
+# OpenAIクライアント初期化（v1系）
+client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 LINE_TOKEN = os.getenv("LINE_TOKEN")
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
     body = request.json
-
-    # ログ出力して確認（RenderのLogsで見える）
-    print("Received body:", body)
+    print("=== Webhook Received ===")
+    print(body)
 
     for event in body.get("events", []):
         if event["type"] == "message" and event["message"]["type"] == "text":
             msg = event["message"]["text"]
 
-            # 翻訳方向の自動判定（英語→日本語 or 日本語→英語）
-            lang = "es" if any(ord(c) < 128 for c in msg) else "ja"
-            prompt = f"Translate this to {'Spanish' if lang == 'es' else 'Japanese'}:\n{msg}"
+            # 日本語か英語かの判定（ASCII範囲でチェック）
+            lang = "es" if any(ord(c) < 128 for c in msg) else "en"
+            prompt = f"Translate this to {'Spanish' if lang == 'es' else 'English'}:\n{msg}"
 
-            res = openai.ChatCompletion.create(
+            # OpenAI API呼び出し
+            res = client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[{"role": "user", "content": prompt}]
             )
-            translated = res.choices[0].message["content"].strip()
-
-            reply_token = event["replyToken"]
+            translated = res.choices[0].message.content.strip()
 
             reply = {
-                "replyToken": reply_token,
+                "replyToken": event["replyToken"],
                 "messages": [{"type": "text", "text": translated}]
             }
 
@@ -45,6 +45,7 @@ def webhook():
     return "OK"
 
 
+# Flask起動設定（Renderで必要）
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
