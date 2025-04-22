@@ -1,85 +1,64 @@
-from flask import Flask, request
 import os
-import requests
 import openai
-from langdetect import detect
+from flask import Flask, request, abort
+from langdetect import detect_langs
+from linebot import LineBotApi, WebhookHandler
+from linebot.exceptions import InvalidSignatureError
+from linebot.models import MessageEvent, TextMessage, TextSendMessage
 
 app = Flask(__name__)
 
-openai.api_key = os.getenv("OPENAI_API_KEY")
-LINE_TOKEN = os.getenv("LINE_TOKEN")
+# 環境変数からAPIキー等を取得
+line_bot_api = LineBotApi(os.environ["LINE_CHANNEL_ACCESS_TOKEN"])
+handler = WebhookHandler(os.environ["LINE_CHANNEL_SECRET"])
+openai.api_key = os.environ["OPENAI_API_KEY"]
 
-# 簡易履歴保存（ユーザー単位で持たせるなら辞書化が必要）
-chat_history = []
-
-def detect_language(text):
-    try:
-        lang = detect(text)
-        return lang if lang in ["en", "es", "ja"] else "other"
-    except:
-        return "other"
-
-@app.route("/webhook", methods=["POST"])
+@app.route("/webhook", methods=['POST'])
 def webhook():
-    body = request.json
-    print("=== Webhook Received ===")
-    print(body)
+    signature = request.headers['X-Line-Signature']
+    body = request.get_data(as_text=True)
+    try:
+        handler.handle(body, signature)
+    except InvalidSignatureError:
+        abort(400)
+    return 'OK'
 
-    for event in body.get("events", []):
-        if event["type"] == "message" and event["message"]["type"] == "text":
-            msg = event["message"]["text"]
-            lang = detect_language(msg)
+@handler.add(MessageEvent, message=TextMessage)
+def handle_message(event):
+    text = event.message.text
 
-            # 翻訳の対象と言語設定
-            if lang == "en":
-                system_prompt = "You are a professional translator. Translate from English to Spanish only. Do not explain."
-            elif lang == "es":
-                system_prompt = "You are a professional translator. Translate from Spanish to English only. Do not explain."
-            elif lang == "ja":
-                system_prompt = "You are a professional translator. Translate from Japanese to English and Spanish only. Do not explain."
-            else:
-                reply = {"type": "text", "text": "Only Japanese, English, and Spanish are supported."}
-                reply_data = {
-                    "replyToken": event["replyToken"],
-                    "messages": [reply]
-                }
-                headers = {
-                    "Authorization": f"Bearer {LINE_TOKEN}",
-                    "Content-Type": "application/json"
-                }
-                requests.post("https://api.line.me/v2/bot/message/reply", headers=headers, json=reply_data)
-                continue
+    try:
+        langs = detect_langs(text)
+        lang_code = langs[0].lang
+        confidence = langs[0].prob
+    except Exception:
+        lang_code = "unknown"
+        confidence = 0
 
-            # チャット履歴構築（翻訳コンテキスト保持）
-            chat_history.clear()
-            chat_history.append({"role": "system", "content": system_prompt})
-            chat_history.append({"role": "user", "content": msg})
+    # 翻訳の組み合わせを決定
+    if lang_code == "ja":
+        prompt = f"日本語を英語とスペイン語に自然な文章で翻訳してください:\n{text}"
+    elif lang_code == "en":
+        prompt = f"Translate the following English sentence naturally into Spanish:\n{text}"
+    elif lang_code == "es":
+        prompt = f"Traduce esta frase en español al inglés de forma natural:\n{text}"
+    else:
+        if confidence < 0.70:
+            reply = "Only Japanese, English, and Spanish are supported."
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+            return
+        else:
+            prompt = f"Translate this sentence into English and Spanish:\n{text}"
 
-            try:
-                response = openai.ChatCompletion.create(
-                    model="gpt-3.5-turbo",
-                    messages=chat_history
-                )
-                translated = response.choices[0].message["content"].strip()
-            except Exception as e:
-                translated = f"[Translation error]\n{str(e)}"
+    # OpenAIへ翻訳依頼
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+        )
+        reply_text = response['choices'][0]['message']['content'].strip()
+    except Exception as e:
+        reply_text = "[Translation error] " + str(e)
 
-            reply = {"type": "text", "text": translated}
-
-            reply_data = {
-                "replyToken": event["replyToken"],
-                "messages": [reply]
-            }
-
-            headers = {
-                "Authorization": f"Bearer {LINE_TOKEN}",
-                "Content-Type": "application/json"
-            }
-
-            requests.post("https://api.line.me/v2/bot/message/reply", headers=headers, json=reply_data)
-
-    return "OK"
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
